@@ -4,56 +4,73 @@ from typing import List, Dict, Any, Optional
 import pandas as pd
 
 class GHUDatabase:
-    """Простая база данных для службы заказчика ГЖУ на SQLite"""
+    """База данных для службы заказчика ГЖУ"""
     
     def __init__(self, db_path: str = "ghu_database.db"):
         self.db_path = db_path
         self.conn = None
         self._create_tables()
+        self._insert_sample_data()
     
     def connect(self):
         """Подключение к базе данных"""
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row  # Для доступа к колонкам по имени
+        if not self.conn:
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+        return self.conn
     
     def close(self):
         """Закрытие соединения"""
         if self.conn:
             self.conn.close()
+            self.conn = None
     
     def _create_tables(self):
         """Создание всех таблиц"""
-        self.connect()
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        # Таблица районов
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS districts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            manager TEXT,
+            phone TEXT
+        )
+        """)
         
         # Таблица домов
-        self.conn.execute("""
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS buildings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            district_id INTEGER NOT NULL,
             address TEXT NOT NULL,
-            floors INTEGER,
             year_built INTEGER,
-            total_apartments INTEGER DEFAULT 0
+            floors INTEGER,
+            total_apartments INTEGER DEFAULT 0,
+            FOREIGN KEY (district_id) REFERENCES districts(id) ON DELETE CASCADE
         )
         """)
         
         # Таблица квартир
-        self.conn.execute("""
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS apartments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             building_id INTEGER NOT NULL,
             number TEXT NOT NULL,
-            area REAL NOT NULL,
+            area REAL NOT NULL CHECK(area > 0),
             rooms INTEGER,
             privatized BOOLEAN DEFAULT 0,
-            has_cold_water BOOLEAN DEFAULT 0,
-            has_hot_water BOOLEAN DEFAULT 0,
-            has_elevator BOOLEAN DEFAULT 0,
+            has_water BOOLEAN DEFAULT 1,
+            has_heating BOOLEAN DEFAULT 1,
+            has_electricity BOOLEAN DEFAULT 1,
             FOREIGN KEY (building_id) REFERENCES buildings(id) ON DELETE CASCADE
         )
         """)
         
         # Таблица жильцов
-        self.conn.execute("""
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS residents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             apartment_id INTEGER NOT NULL,
@@ -61,176 +78,315 @@ class GHUDatabase:
             birth_date TEXT NOT NULL,
             passport TEXT,
             is_owner BOOLEAN DEFAULT 0,
+            phone TEXT,
             registration_date TEXT DEFAULT CURRENT_DATE,
             FOREIGN KEY (apartment_id) REFERENCES apartments(id) ON DELETE CASCADE
         )
         """)
         
-        # Таблица платежей
-        self.conn.execute("""
-        CREATE TABLE IF NOT EXISTS payments (
+        # Таблица услуг
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS services (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            apartment_id INTEGER NOT NULL,
-            period TEXT NOT NULL,
-            amount REAL NOT NULL,
-            is_paid BOOLEAN DEFAULT 0,
-            payment_date TEXT,
-            service_type TEXT DEFAULT 'квартплата',
-            FOREIGN KEY (apartment_id) REFERENCES apartments(id) ON DELETE CASCADE
+            name TEXT NOT NULL UNIQUE,
+            price_per_m2 REAL NOT NULL CHECK(price_per_m2 > 0),
+            description TEXT
         )
         """)
         
-        # Создаем индексы для ускорения запросов
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_apartments_building ON apartments(building_id)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_residents_apartment ON residents(apartment_id)")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period)")
+        # Таблица платежей (отношение 1:М к квартирам)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            apartment_id INTEGER NOT NULL,
+            service_id INTEGER NOT NULL,
+            period TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount >= 0),
+            is_paid BOOLEAN DEFAULT 0,
+            payment_date TEXT,
+            FOREIGN KEY (apartment_id) REFERENCES apartments(id) ON DELETE CASCADE,
+            FOREIGN KEY (service_id) REFERENCES services(id)
+        )
+        """)
         
-        self.conn.commit()
-        print("Таблицы созданы успешно!")
-    
-    def add_building(self, address: str, floors: int = None, year_built: int = None) -> int:
-        """Добавить дом"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "INSERT INTO buildings (address, floors, year_built) VALUES (?, ?, ?)",
-            (address, floors, year_built)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
-    
-    def add_apartment(self, building_id: int, number: str, area: float, 
-                     rooms: int = None, privatized: bool = False) -> int:
-        """Добавить квартиру"""
-        self.connect()
-        cursor = self.conn.cursor()
+        # Индексы для ускорения запросов
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_buildings_district ON buildings(district_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_apartments_building ON apartments(building_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_residents_apartment ON residents(apartment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_apartment ON payments(apartment_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_period ON payments(period)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payments_paid ON payments(is_paid)")
         
-        cursor.execute(
-            """INSERT INTO apartments 
-            (building_id, number, area, rooms, privatized) 
-            VALUES (?, ?, ?, ?, ?)""",
-            (building_id, number, area, rooms, 1 if privatized else 0)
-        )
+        conn.commit()
+    
+    def _insert_sample_data(self):
+        """Вставка тестовых данных"""
+        conn = self.connect()
+        cursor = conn.cursor()
         
-        # Увеличиваем счетчик квартир в доме
-        cursor.execute(
-            "UPDATE buildings SET total_apartments = total_apartments + 1 WHERE id = ?",
-            (building_id,)
-        )
+        # Проверяем, есть ли уже данные
+        cursor.execute("SELECT COUNT(*) FROM districts")
+        if cursor.fetchone()[0] > 0:
+            return
         
-        self.conn.commit()
-        return cursor.lastrowid
+        # Добавляем районы
+        districts = [
+            ("Центральный район", "Иванов И.И.", "+7-111-222-3333"),
+            ("Северный район", "Петров П.П.", "+7-111-222-4444"),
+            ("Южный район", "Сидоров С.С.", "+7-111-222-5555")
+        ]
+        
+        for name, manager, phone in districts:
+            cursor.execute(
+                "INSERT INTO districts (name, manager, phone) VALUES (?, ?, ?)",
+                (name, manager, phone)
+            )
+        
+        # Добавляем услуги
+        services = [
+            ("Холодное водоснабжение", 25.50, "Водоснабжение холодной водой"),
+            ("Горячее водоснабжение", 45.30, "Водоснабжение горячей водой"),
+            ("Отопление", 35.20, "Отопление помещений"),
+            ("Электроснабжение", 4.80, "Электроэнергия"),
+            ("Вывоз ТБО", 8.90, "Вывоз твердых бытовых отходов")
+        ]
+        
+        for name, price, desc in services:
+            cursor.execute(
+                "INSERT INTO services (name, price_per_m2, description) VALUES (?, ?, ?)",
+                (name, price, desc)
+            )
+        
+        conn.commit()
     
-    def add_resident(self, apartment_id: int, full_name: str, birth_date: str,
-                    passport: str = None, is_owner: bool = False) -> int:
-        """Добавить жильца"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """INSERT INTO residents 
-            (apartment_id, full_name, birth_date, passport, is_owner) 
-            VALUES (?, ?, ?, ?, ?)""",
-            (apartment_id, full_name, birth_date, passport, 1 if is_owner else 0)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
+    # === CRUD операции для всех таблиц ===
     
-    def add_payment(self, apartment_id: int, period: str, amount: float,
-                   is_paid: bool = False, payment_date: str = None) -> int:
-        """Добавить платеж"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """INSERT INTO payments 
-            (apartment_id, period, amount, is_paid, payment_date) 
-            VALUES (?, ?, ?, ?, ?)""",
-            (apartment_id, period, amount, 1 if is_paid else 0, payment_date)
-        )
-        self.conn.commit()
-        return cursor.lastrowid
-    
-    def get_all_buildings(self) -> List[Dict]:
-        """Получить все дома"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM buildings ORDER BY address")
+    def get_all(self, table_name: str) -> List[Dict]:
+        """Получить все записи из таблицы"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM {table_name}")
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_apartments_in_building(self, building_id: int) -> List[Dict]:
+    def get_by_id(self, table_name: str, record_id: int) -> Optional[Dict]:
+        """Получить запись по ID"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM {table_name} WHERE id = ?", (record_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
+    def insert(self, table_name: str, data: Dict) -> int:
+        """Вставить новую запись"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        columns = ', '.join(data.keys())
+        placeholders = ', '.join(['?' for _ in data])
+        values = tuple(data.values())
+        
+        query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+        cursor.execute(query, values)
+        conn.commit()
+        
+        return cursor.lastrowid
+    
+    def update(self, table_name: str, record_id: int, data: Dict) -> bool:
+        """Обновить запись"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        set_clause = ', '.join([f"{key} = ?" for key in data.keys()])
+        values = tuple(data.values()) + (record_id,)
+        
+        query = f"UPDATE {table_name} SET {set_clause} WHERE id = ?"
+        cursor.execute(query, values)
+        conn.commit()
+        
+        return cursor.rowcount > 0
+    
+    def delete(self, table_name: str, record_id: int) -> bool:
+        """Удалить запись"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        cursor.execute(f"DELETE FROM {table_name} WHERE id = ?", (record_id,))
+        conn.commit()
+        
+        return cursor.rowcount > 0
+    
+    def search(self, table_name: str, field: str, value: str) -> List[Dict]:
+        """Поиск записей по полю"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        # Для числовых полей
+        if field in ['id', 'year_built', 'floors', 'area', 'rooms', 'price_per_m2', 'amount']:
+            try:
+                num_value = float(value) if '.' in value else int(value)
+                cursor.execute(f"SELECT * FROM {table_name} WHERE {field} = ?", (num_value,))
+            except:
+                cursor.execute(f"SELECT * FROM {table_name} WHERE {field} LIKE ?", (f'%{value}%',))
+        else:
+            cursor.execute(f"SELECT * FROM {table_name} WHERE {field} LIKE ?", (f'%{value}%',))
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def filter_records(self, table_name: str, conditions: Dict) -> List[Dict]:
+        """Фильтрация записей по нескольким полям"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        if not conditions:
+            return self.get_all(table_name)
+        
+        where_clauses = []
+        values = []
+        
+        for field, value in conditions.items():
+            if value not in ['', None]:
+                if isinstance(value, (int, float)):
+                    where_clauses.append(f"{field} = ?")
+                    values.append(value)
+                else:
+                    where_clauses.append(f"{field} LIKE ?")
+                    values.append(f'%{value}%')
+        
+        if not where_clauses:
+            return self.get_all(table_name)
+        
+        query = f"SELECT * FROM {table_name} WHERE {' AND '.join(where_clauses)}"
+        cursor.execute(query, values)
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def sort_records(self, table_name: str, field: str, ascending: bool = True) -> List[Dict]:
+        """Сортировка записей по полю"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        
+        order = "ASC" if ascending else "DESC"
+        cursor.execute(f"SELECT * FROM {table_name} ORDER BY {field} {order}")
+        
+        return [dict(row) for row in cursor.fetchall()]
+    
+    # === Специфичные методы для отношений ===
+    
+    def get_buildings_by_district(self, district_id: int) -> List[Dict]:
+        """Получить все дома в районе"""
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT b.*, d.name as district_name 
+            FROM buildings b 
+            JOIN districts d ON b.district_id = d.id 
+            WHERE b.district_id = ?
+            ORDER BY b.address
+        """, (district_id,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def get_apartments_by_building(self, building_id: int) -> List[Dict]:
         """Получить все квартиры в доме"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM apartments WHERE building_id = ? ORDER BY number",
-            (building_id,)
-        )
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT a.*, b.address as building_address 
+            FROM apartments a 
+            JOIN buildings b ON a.building_id = b.id 
+            WHERE a.building_id = ?
+            ORDER BY a.number
+        """, (building_id,))
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_residents_in_apartment(self, apartment_id: int) -> List[Dict]:
+    def get_residents_by_apartment(self, apartment_id: int) -> List[Dict]:
         """Получить всех жильцов в квартире"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM residents WHERE apartment_id = ? ORDER BY full_name",
-            (apartment_id,)
-        )
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT r.*, a.number as apartment_number, b.address as building_address
+            FROM residents r 
+            JOIN apartments a ON r.apartment_id = a.id 
+            JOIN buildings b ON a.building_id = b.id 
+            WHERE r.apartment_id = ?
+            ORDER BY r.is_owner DESC, r.full_name
+        """, (apartment_id,))
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_payments_for_apartment(self, apartment_id: int) -> List[Dict]:
+    def get_payments_by_apartment(self, apartment_id: int) -> List[Dict]:
         """Получить все платежи по квартире"""
-        self.connect()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "SELECT * FROM payments WHERE apartment_id = ? ORDER BY period DESC",
-            (apartment_id,)
-        )
+        conn = self.connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.*, s.name as service_name, a.number as apartment_number
+            FROM payments p 
+            JOIN services s ON p.service_id = s.id 
+            JOIN apartments a ON p.apartment_id = a.id 
+            WHERE p.apartment_id = ?
+            ORDER BY p.period DESC
+        """, (apartment_id,))
         return [dict(row) for row in cursor.fetchall()]
     
-    def mark_payment_as_paid(self, payment_id: int, payment_date: str = None):
-        """Отметить платеж как оплаченный"""
-        self.connect()
-        if not payment_date:
-            payment_date = datetime.now().strftime("%Y-%m-%d")
+    def add_apartment_with_residents(self, building_id: int, apartment_data: Dict, residents_data: List[Dict]) -> int:
+        """Добавить квартиру с жильцами (форма 1:М)"""
+        conn = self.connect()
+        cursor = conn.cursor()
         
-        self.conn.execute(
-            "UPDATE payments SET is_paid = 1, payment_date = ? WHERE id = ?",
-            (payment_date, payment_id)
-        )
-        self.conn.commit()
+        try:
+            # Добавляем квартиру
+            cursor.execute("""
+                INSERT INTO apartments (building_id, number, area, rooms, privatized, has_water, has_heating, has_electricity)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                building_id,
+                apartment_data['number'],
+                apartment_data['area'],
+                apartment_data.get('rooms'),
+                1 if apartment_data.get('privatized') else 0,
+                1 if apartment_data.get('has_water', True) else 0,
+                1 if apartment_data.get('has_heating', True) else 0,
+                1 if apartment_data.get('has_electricity', True) else 0
+            ))
+            
+            apartment_id = cursor.lastrowid
+            
+            # Обновляем счетчик квартир в доме
+            cursor.execute("UPDATE buildings SET total_apartments = total_apartments + 1 WHERE id = ?", (building_id,))
+            
+            # Добавляем жильцов
+            for resident in residents_data:
+                cursor.execute("""
+                    INSERT INTO residents (apartment_id, full_name, birth_date, passport, is_owner, phone)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    apartment_id,
+                    resident['full_name'],
+                    resident['birth_date'],
+                    resident.get('passport'),
+                    1 if resident.get('is_owner') else 0,
+                    resident.get('phone')
+                ))
+            
+            conn.commit()
+            return apartment_id
+            
+        except Exception as e:
+            conn.rollback()
+            raise e
     
-    def delete_building(self, building_id: int):
-        """Удалить дом (автоматически удалятся все связанные квартиры, жильцы и платежи)"""
-        self.connect()
-        self.conn.execute("DELETE FROM buildings WHERE id = ?", (building_id,))
-        self.conn.commit()
-    
-    def add_sample_data(self):
-        """Добавить примеры данных для тестирования"""
-        print("Добавление тестовых данных...")
+    def calculate_payment(self, apartment_id: int, service_id: int, period: str) -> float:
+        """Рассчитать сумму платежа"""
+        conn = self.connect()
+        cursor = conn.cursor()
         
-        # Добавляем дома
-        building1_id = self.add_building("ул. Ленина, 10", 5, 1985)
-        building2_id = self.add_building("ул. Советская, 25", 9, 1990)
+        # Получаем площадь квартиры и цену услуги
+        cursor.execute("""
+            SELECT a.area, s.price_per_m2 
+            FROM apartments a, services s 
+            WHERE a.id = ? AND s.id = ?
+        """, (apartment_id, service_id))
         
-        # Добавляем квартиры
-        apartment1_id = self.add_apartment(building1_id, "25", 55.5, 2, True)
-        apartment2_id = self.add_apartment(building1_id, "26", 42.0, 1, False)
-        apartment3_id = self.add_apartment(building2_id, "101", 75.0, 3, True)
-        
-        # Добавляем жильцов
-        self.add_resident(apartment1_id, "Иванов Иван Иванович", "1980-05-15", 
-                         "1234 567890", True)
-        self.add_resident(apartment1_id, "Иванова Мария Петровна", "1985-07-22",
-                         "1234 567891", False)
-        self.add_resident(apartment2_id, "Петров Петр Петрович", "1975-11-30",
-                         "4321 123456", True)
-        self.add_resident(apartment3_id, "Сидорова Анна Васильевна", "1950-12-05",
-                         "5678 901234", True)
-        
-        # Добавляем платежи
-        self.add_payment(apartment1_id, "2024-01-01", 1500.00, True, "2024-01-15")
-        self.add_payment(apartment1_id, "2024-02-01", 1500.00, False)
-        self.add_payment(apartment2_id, "2024-01-01", 1200.00, True, "2024-01-10")
-        self.add_payment(apartment3_id, "2024-01-01", 1800.00, True, "2024-01-20")
-        
-        print("Тестовые данные добавлены успешно!")
+        result = cursor.fetchone()
+        if result:
+            area, price = result
+            return area * price
+        return 0.0
