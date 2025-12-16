@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox
 import pandas as pd
 from datetime import datetime
 from database import GHUDatabase
@@ -223,7 +223,23 @@ class GHUClientApp:
         entries = {}
         row = 0
         
-        for field in self.current_data[0].keys() if self.current_data else []:
+        # Получаем поля из первого элемента данных или создаем стандартные
+        if self.current_data and len(self.current_data) > 0:
+            fields = list(self.current_data[0].keys())
+        else:
+            # Стандартные поля для каждой таблицы (ИСПРАВЛЕНЫ для apartments)
+            table_fields = {
+                'districts': ['name', 'manager', 'phone'],
+                'buildings': ['address', 'year_built', 'floors', 'total_apartments'],
+                'apartments': ['building_id', 'number', 'area', 'rooms', 'privatized', 
+                              'cold_water', 'hot_water', 'garbage_chute', 'elevator'],
+                'residents': ['apartment_id', 'full_name', 'birth_date', 'passport', 'is_owner', 'phone'],
+                'services': ['name', 'price', 'description'],
+                'payments': ['apartment_id', 'service_id', 'period', 'amount', 'is_paid', 'payment_date']
+            }
+            fields = table_fields.get(self.current_table, [])
+        
+        for field in fields:
             if field == 'id':
                 continue
                 
@@ -235,11 +251,11 @@ class GHUClientApp:
                     entry.insert(0, record[field])
                 else:
                     entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
-            elif field in ['privatized', 'has_water', 'has_heating', 'has_electricity', 'is_owner', 'is_paid']:
+            elif field in ['privatized', 'cold_water', 'hot_water', 'garbage_chute', 'elevator', 'is_owner', 'is_paid']:
                 var = tk.BooleanVar(value=bool(record.get(field, False)))
                 entry = ttk.Checkbutton(dialog, variable=var, text="")
                 entries[field] = var
-            elif isinstance(record.get(field), (int, float)) or field in ['area', 'price_per_m2', 'amount', 'rooms', 'floors', 'year_built']:
+            elif isinstance(record.get(field), (int, float)) or field in ['area', 'price', 'amount', 'rooms', 'floors', 'year_built', 'total_apartments', 'building_id', 'apartment_id', 'service_id']:
                 entry = ttk.Entry(dialog, width=30)
                 if field in record:
                     entry.insert(0, str(record[field]))
@@ -263,15 +279,15 @@ class GHUClientApp:
                 data = {}
                 for field, widget in entries.items():
                     if isinstance(widget, tk.BooleanVar):
-                        data[field] = widget.get()
+                        data[field] = 1 if widget.get() else 0
                     else:
                         value = widget.get()
                         # Преобразуем типы данных
                         if field.endswith('_date') or field in ['birth_date', 'period', 'payment_date', 'registration_date']:
                             data[field] = value
-                        elif field in ['area', 'price_per_m2', 'amount']:
+                        elif field in ['area', 'price', 'amount']:
                             data[field] = float(value) if value else 0.0
-                        elif field in ['rooms', 'floors', 'year_built', 'district_id', 'building_id', 'apartment_id', 'service_id']:
+                        elif field in ['rooms', 'floors', 'year_built', 'total_apartments', 'building_id', 'apartment_id', 'service_id']:
                             data[field] = int(value) if value else 0
                         else:
                             data[field] = value
@@ -417,15 +433,14 @@ class GHUClientApp:
                     messagebox.showerror("Ошибка", "Заполните номер квартиры и площадь")
                     return
                 
-                # Данные жильцов
+                # Данные жильцов (в реальном приложении нужно хранить их где-то)
+                # Для демонстрации создаем тестовые данные
                 residents_data = []
                 for i in range(residents_listbox.size()):
-                    # В реальном приложении здесь была бы логика получения данных жильцов
-                    # Для простоты создаем тестовые данные
                     residents_data.append({
                         'full_name': f"Жилец {i+1}",
                         'birth_date': '1990-01-01',
-                        'is_owner': i == 0  # Первый жилец - владелец
+                        'is_owner': i == 0
                     })
                 
                 if not residents_data:
@@ -533,7 +548,7 @@ class GHUClientApp:
             try:
                 sorted_data = sorted(
                     self.current_data,
-                    key=lambda x: x.get(column, ''),
+                    key=lambda x: str(x.get(column, '')),
                     reverse=not ascending
                 )
                 self.load_table_data(sorted_data)
@@ -564,10 +579,10 @@ class GHUClientApp:
             filters['period'] = period_entry
             row += 1
             
-            ttk.Label(filters_frame, text="Район:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
-            district_combo = ttk.Combobox(filters_frame, values=["Центральный район", "Северный район", "Южный район"])
-            district_combo.grid(row=row, column=1, padx=5, pady=5)
-            filters['district'] = district_combo
+            ttk.Label(filters_frame, text="Адрес:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+            address_entry = ttk.Entry(filters_frame, width=15)
+            address_entry.grid(row=row, column=1, padx=5, pady=5)
+            filters['address'] = address_entry
             row += 1
             
             ttk.Label(filters_frame, text="Статус:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
@@ -582,13 +597,13 @@ class GHUClientApp:
             filters['min_amount'] = min_amount_entry
             row += 1
             
-            sort_fields = ["period", "district", "address", "amount", "status"]
+            sort_fields = ["period", "address", "amount", "status"]
             
         elif report_type == "debts":
-            ttk.Label(filters_frame, text="Район:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
-            district_combo = ttk.Combobox(filters_frame, values=["", "Центральный район", "Северный район", "Южный район"])
-            district_combo.grid(row=row, column=1, padx=5, pady=5)
-            filters['district'] = district_combo
+            ttk.Label(filters_frame, text="Адрес:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+            address_entry = ttk.Entry(filters_frame, width=15)
+            address_entry.grid(row=row, column=1, padx=5, pady=5)
+            filters['address'] = address_entry
             row += 1
             
             ttk.Label(filters_frame, text="Мин. долг:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
@@ -597,13 +612,13 @@ class GHUClientApp:
             filters['min_debt'] = min_debt_entry
             row += 1
             
-            sort_fields = ["amount", "period", "district", "months"]
+            sort_fields = ["amount", "period", "address", "months"]
             
         elif report_type == "electoral":
-            ttk.Label(filters_frame, text="Район:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
-            district_combo = ttk.Combobox(filters_frame, values=["", "Центральный район", "Северный район", "Южный район"])
-            district_combo.grid(row=row, column=1, padx=5, pady=5)
-            filters['district'] = district_combo
+            ttk.Label(filters_frame, text="Адрес:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
+            address_entry = ttk.Entry(filters_frame, width=15)
+            address_entry.grid(row=row, column=1, padx=5, pady=5)
+            filters['address'] = address_entry
             row += 1
             
             ttk.Label(filters_frame, text="Мин. возраст:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
@@ -618,7 +633,7 @@ class GHUClientApp:
             filters['max_age'] = max_age_entry
             row += 1
             
-            sort_fields = ["birth_date", "age", "district", "address"]
+            sort_fields = ["birth_date", "age", "address"]
         
         # Сортировка
         ttk.Label(filters_frame, text="Сортировка по:").grid(row=row, column=0, padx=5, pady=5, sticky=tk.W)
@@ -731,7 +746,6 @@ class GHUClientApp:
             # Заполняем данными
             for index, row in grouped.iterrows():
                 if isinstance(index, tuple):
-                    # Для многоуровневой группировки
                     display_index = ' / '.join(str(i) for i in index)
                 else:
                     display_index = str(index)
