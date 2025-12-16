@@ -9,31 +9,28 @@ class GHUReports:
     def __init__(self, db: GHUDatabase):
         self.db = db
     
-    def generate_payments_report(self, filters: Dict = None, sort_by: str = "period", ascending: bool = True) -> pd.DataFrame:
+    def generate_payments_report(self, filters: Dict = None, sort_by: str = "period", ascending: bool = True):
         """
         Отчет 1: Платежи по услугам
-        Требования: 2+ таблицы, группировка, вычисляемые поля, итоги
         """
         conn = self.db.connect()
         
-        # Базовый запрос с джойном нескольких таблиц
+        # Базовый запрос
         query = """
         SELECT 
             p.period as Период,
-            d.name as Район,
             b.address as Адрес_дома,
             a.number as Квартира,
             r.full_name as Жилец,
             s.name as Услуга,
             a.area as Площадь,
-            s.price_per_m2 as Тариф,
+            s.price as Тариф,
             p.amount as Сумма,
             CASE WHEN p.is_paid THEN 'Оплачено' ELSE 'Не оплачено' END as Статус,
             p.payment_date as Дата_оплаты
         FROM payments p
         JOIN apartments a ON p.apartment_id = a.id
         JOIN buildings b ON a.building_id = b.id
-        JOIN districts d ON b.district_id = d.id
         JOIN residents r ON a.id = r.apartment_id AND r.is_owner = 1
         JOIN services s ON p.service_id = s.id
         WHERE 1=1
@@ -41,15 +38,14 @@ class GHUReports:
         
         params = []
         
-        # Применяем фильтры
         if filters:
             if 'period' in filters and filters['period']:
                 query += " AND p.period LIKE ?"
                 params.append(f'%{filters["period"]}%')
             
-            if 'district' in filters and filters['district']:
-                query += " AND d.name LIKE ?"
-                params.append(f'%{filters["district"]}%')
+            if 'address' in filters and filters['address']:
+                query += " AND b.address LIKE ?"
+                params.append(f'%{filters["address"]}%')
             
             if 'status' in filters and filters['status']:
                 if filters['status'] == 'paid':
@@ -64,10 +60,9 @@ class GHUReports:
                 except:
                     pass
         
-        # Применяем сортировку
+        # Сортировка
         sort_mapping = {
             'period': 'p.period',
-            'district': 'd.name',
             'address': 'b.address',
             'amount': 'p.amount',
             'status': 'p.is_paid'
@@ -78,29 +73,33 @@ class GHUReports:
         query += f" ORDER BY {sort_field} {order}"
         
         # Выполняем запрос
-        df = pd.read_sql_query(query, conn, params=params)
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+        except Exception as e:
+            print(f"Ошибка SQL: {e}")
+            return pd.DataFrame(), pd.DataFrame(), {}
         
         if not df.empty:
             # Вычисляем дополнительные поля
-            df['Сумма_с_НДС'] = df['Сумма'] * 1.2  # НДС 20%
+            df['Сумма_с_НДС'] = df['Сумма'] * 1.2
             df['Площадь_на_человека'] = df.apply(
                 lambda row: f"{row['Площадь']:.1f} м²", axis=1
             )
             
-            # Группировка по районам
-            grouped = df.groupby('Район').agg({
+            # Группировка по адресу
+            grouped = df.groupby('Адрес_дома').agg({
                 'Сумма': 'sum',
                 'Квартира': 'count',
                 'Площадь': 'sum'
             }).round(2)
             
             grouped = grouped.rename(columns={
-                'Сумма': 'Итого_по_району',
+                'Сумма': 'Итого_по_дому',
                 'Квартира': 'Кол-во_квартир',
                 'Площадь': 'Общая_площадь'
             })
             
-            # Итоговые данные
+            # Итоги
             totals = {
                 'Всего_сумма': df['Сумма'].sum(),
                 'Средний_чек': df['Сумма'].mean(),
@@ -112,16 +111,14 @@ class GHUReports:
         
         return pd.DataFrame(), pd.DataFrame(), {}
     
-    def generate_debts_report(self, filters: Dict = None, sort_by: str = "amount", ascending: bool = False) -> pd.DataFrame:
+    def generate_debts_report(self, filters: Dict = None, sort_by: str = "amount", ascending: bool = False):
         """
         Отчет 2: Задолженности по квартирам
-        Требования: 2+ таблицы, группировка, вычисляемые поля, итоги
         """
         conn = self.db.connect()
         
         query = """
         SELECT 
-            d.name as Район,
             b.address as Адрес,
             a.number as Квартира,
             r.full_name as Должник,
@@ -133,7 +130,6 @@ class GHUReports:
         FROM payments p
         JOIN apartments a ON p.apartment_id = a.id
         JOIN buildings b ON a.building_id = b.id
-        JOIN districts d ON b.district_id = d.id
         JOIN residents r ON a.id = r.apartment_id AND r.is_owner = 1
         WHERE p.is_paid = 0
         GROUP BY a.id, r.full_name
@@ -143,9 +139,9 @@ class GHUReports:
         params = []
         
         if filters:
-            if 'district' in filters and filters['district']:
-                query += " AND d.name LIKE ?"
-                params.append(f'%{filters["district"]}%')
+            if 'address' in filters and filters['address']:
+                query += " AND b.address LIKE ?"
+                params.append(f'%{filters["address"]}%')
             
             if 'min_debt' in filters and filters['min_debt']:
                 try:
@@ -158,7 +154,7 @@ class GHUReports:
         sort_mapping = {
             'amount': 'SUM(p.amount)',
             'period': 'MAX(p.period)',
-            'district': 'd.name',
+            'address': 'b.address',
             'months': 'COUNT(p.id)'
         }
         
@@ -166,7 +162,11 @@ class GHUReports:
         order = "DESC" if not ascending else "ASC"
         query += f" ORDER BY {sort_field} {order}"
         
-        df = pd.read_sql_query(query, conn, params=params)
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+        except Exception as e:
+            print(f"Ошибка SQL: {e}")
+            return pd.DataFrame(), pd.DataFrame(), {}
         
         if not df.empty:
             # Вычисляемые поля
@@ -175,15 +175,15 @@ class GHUReports:
                 lambda x: f"{x} мес." if x < 12 else f"{x//12} г. {x%12} мес."
             )
             
-            # Группировка по районам
-            grouped = df.groupby('Район').agg({
+            # Группировка по адресу
+            grouped = df.groupby('Адрес').agg({
                 'Общая_задолженность': 'sum',
                 'Квартира': 'count',
                 'Месяцев_задолженности': 'mean'
             }).round(2)
             
             grouped = grouped.rename(columns={
-                'Общая_задолженность': 'Сумма_долга_по_району',
+                'Общая_задолженность': 'Сумма_долга_по_дому',
                 'Квартира': 'Кол-во_должников',
                 'Месяцев_задолженности': 'Средний_стаж_долга'
             })
@@ -200,50 +200,38 @@ class GHUReports:
         
         return pd.DataFrame(), pd.DataFrame(), {}
     
-    def generate_electoral_register(self, filters: Dict = None, sort_by: str = "birth_date", ascending: bool = True) -> pd.DataFrame:
+    def generate_electoral_register(self, filters: Dict = None, sort_by: str = "birth_date", ascending: bool = True):
         """
         Отчет 3: Избирательные списки
-        Требования: 2+ таблицы, группировка, вычисляемые поля, итоги
         """
         conn = self.db.connect()
         
         query = """
         SELECT 
-            d.name as Район,
             b.address as Адрес,
             a.number as Квартира,
             r.full_name as ФИО,
             r.birth_date as Дата_рождения,
-            date('now') - r.birth_date as Возраст,
+            (strftime('%Y', 'now') - strftime('%Y', r.birth_date)) as Возраст,
             r.passport as Паспорт,
-            r.registration_date as Дата_регистрации,
-            CASE 
-                WHEN date('now') - r.birth_date >= 18 THEN 'Совершеннолетний'
-                ELSE 'Несовершеннолетний'
-            END as Возрастная_категория,
-            CASE 
-                WHEN date('now') - r.birth_date >= 60 THEN 'Пенсионер'
-                WHEN date('now') - r.birth_date >= 18 THEN 'Взрослый'
-                ELSE 'Ребенок'
-            END as Категория
+            r.registration_date as Дата_регистрации
         FROM residents r
         JOIN apartments a ON r.apartment_id = a.id
         JOIN buildings b ON a.building_id = b.id
-        JOIN districts d ON b.district_id = d.id
-        WHERE date('now') - r.birth_date >= 18  # Только совершеннолетние
+        WHERE (strftime('%Y', 'now') - strftime('%Y', r.birth_date)) >= 18
         """
         
         params = []
         
         if filters:
-            if 'district' in filters and filters['district']:
-                query += " AND d.name LIKE ?"
-                params.append(f'%{filters["district"]}%')
+            if 'address' in filters and filters['address']:
+                query += " AND b.address LIKE ?"
+                params.append(f'%{filters["address"]}%')
             
             if 'min_age' in filters and filters['min_age']:
                 try:
                     min_age = int(filters['min_age'])
-                    query += " AND (date('now') - r.birth_date) >= ?"
+                    query += " AND (strftime('%Y', 'now') - strftime('%Y', r.birth_date)) >= ?"
                     params.append(min_age)
                 except:
                     pass
@@ -251,7 +239,7 @@ class GHUReports:
             if 'max_age' in filters and filters['max_age']:
                 try:
                     max_age = int(filters['max_age'])
-                    query += " AND (date('now') - r.birth_date) <= ?"
+                    query += " AND (strftime('%Y', 'now') - strftime('%Y', r.birth_date)) <= ?"
                     params.append(max_age)
                 except:
                     pass
@@ -259,8 +247,7 @@ class GHUReports:
         # Сортировка
         sort_mapping = {
             'birth_date': 'r.birth_date',
-            'age': 'date("now") - r.birth_date',
-            'district': 'd.name',
+            'age': 'strftime("%Y", "now") - strftime("%Y", r.birth_date)',
             'address': 'b.address'
         }
         
@@ -268,15 +255,25 @@ class GHUReports:
         order = "ASC" if ascending else "DESC"
         query += f" ORDER BY {sort_field} {order}"
         
-        df = pd.read_sql_query(query, conn, params=params)
+        try:
+            df = pd.read_sql_query(query, conn, params=params)
+        except Exception as e:
+            print(f"Ошибка SQL: {e}")
+            return pd.DataFrame(), pd.DataFrame(), {}
         
         if not df.empty:
             # Вычисляем точный возраст
-            df['Возраст_лет'] = df['Дата_рождения'].apply(
-                lambda x: (date.today() - datetime.strptime(x, '%Y-%m-%d').date()).days // 365
-            )
+            def calculate_age(birth_date_str):
+                try:
+                    birth_date = datetime.strptime(birth_date_str, '%Y-%m-%d').date()
+                    today = date.today()
+                    return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+                except:
+                    return 0
             
-            # Группировка по возрастным категориям
+            df['Возраст_лет'] = df['Дата_рождения'].apply(calculate_age)
+            
+            # Возрастные группы
             def get_age_group(age):
                 if age < 30:
                     return "18-29 лет"
@@ -289,7 +286,8 @@ class GHUReports:
             
             df['Возрастная_группа'] = df['Возраст_лет'].apply(get_age_group)
             
-            grouped = df.groupby(['Район', 'Возрастная_группа']).agg({
+            # Группировка
+            grouped = df.groupby(['Адрес', 'Возрастная_группа']).agg({
                 'ФИО': 'count',
                 'Возраст_лет': 'mean'
             }).round(1)
@@ -304,8 +302,7 @@ class GHUReports:
                 'Всего_избирателей': len(df),
                 'Средний_возраст': df['Возраст_лет'].mean(),
                 'Самый_старший': df['Возраст_лет'].max(),
-                'Самый_молодой': df['Возраст_лет'].min(),
-                'По_районам': df['Район'].value_counts().to_dict()
+                'Самый_молодой': df['Возраст_лет'].min()
             }
             
             return df, grouped, totals
