@@ -1,183 +1,127 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import pandas as pd
+from datetime import datetime
 from database import GHUDatabase
 from reports import GHUReports
-import pandas as pd
 
-def print_title(title):
-    print("\n" + "="*50)
-    print(f"  {title}")
-    print("="*50)
-
-def main():
-    # Создаем базу данных
-    db = GHUDatabase("ghu_simple.db")
-    
-    # Добавляем тестовые данные
-    db.add_sample_data()
-    
-    # Создаем объект для отчетов
-    reports = GHUReports(db)
-    
-    while True:
-        print("\n" + "="*50)
-        print("  СИСТЕМА УЧЕТА ЖИЛОГО ФОНДА ГЖУ")
-        print("="*50)
-        print("1. Показать все дома")
-        print("2. Отчет по платежам")
-        print("3. Избирательный список")
-        print("4. Отчет по задолженностям")
-        print("5. Добавить новый дом")
-        print("6. Добавить квартиру")
-        print("7. Отметить платеж как оплаченный")
-        print("8. Подробности по квартире")
-        print("0. Выход")
+class GHUClientApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Система учета жилого фонда ГЖУ")
+        self.root.geometry("1200x700")
         
-        choice = input("\nВыберите действие: ").strip()
+        # Инициализация БД и отчетов
+        self.db = GHUDatabase()
+        self.reports = GHUReports(self.db)
         
-        if choice == "1":
-            print_title("ОТЧЕТ ПО ВСЕМ ДОМАМ")
-            df = reports.generate_buildings_report()
-            print(df.to_string(index=False))
-            
-        elif choice == "2":
-            print_title("ОТЧЕТ ПО ПЛАТЕЖАМ")
-            year = input("Год (оставьте пустым для всех): ")
-            month = input("Месяц (оставьте пустым для всех): ")
-            
-            df = reports.generate_payments_report(
-                int(year) if year else None,
-                int(month) if month else None
-            )
-            print(df.to_string(index=False))
-            
-            # Сводка
-            total = df['Сумма'].sum()
-            paid = df[df['Статус'] == 'Оплачено']['Сумма'].sum()
-            print(f"\nИтого: {total:.2f} руб. (Оплачено: {paid:.2f} руб.)")
-            
-        elif choice == "3":
-            print_title("ИЗБИРАТЕЛЬНЫЙ СПИСОК")
-            df = reports.generate_electoral_register()
-            if not df.empty:
-                print(df.to_string(index=False))
-                print(f"\nВсего избирателей: {len(df)} чел.")
-            else:
-                print("Нет данных для отчета")
-                
-        elif choice == "4":
-            print_title("ОТЧЕТ ПО ЗАДОЛЖЕННОСТЯМ")
-            df = reports.generate_debts_report()
-            if not df.empty:
-                print(df.to_string(index=False))
-                total_debt = df['Общая задолженность'].sum()
-                print(f"\nОбщая задолженность: {total_debt:.2f} руб.")
-            else:
-                print("Задолженностей нет")
-                
-        elif choice == "5":
-            print_title("ДОБАВЛЕНИЕ НОВОГО ДОМА")
-            address = input("Адрес дома: ")
-            floors = input("Количество этажей (опционально): ")
-            year = input("Год постройки (опционально): ")
-            
-            building_id = db.add_building(
-                address,
-                int(floors) if floors else None,
-                int(year) if year else None
-            )
-            print(f"Дом добавлен! ID: {building_id}")
-            
-        elif choice == "6":
-            print_title("ДОБАВЛЕНИЕ КВАРТИРЫ")
-            
-            # Показываем список домов
-            buildings = db.get_all_buildings()
-            print("Список домов:")
-            for b in buildings:
-                print(f"{b['id']}. {b['address']}")
-            
-            building_id = int(input("\nID дома: "))
-            number = input("Номер квартиры: ")
-            area = float(input("Площадь (м²): "))
-            rooms = input("Количество комнат (опционально): ")
-            privatized = input("Приватизирована? (да/нет): ").lower() == 'да'
-            
-            apartment_id = db.add_apartment(
-                building_id, number, area,
-                int(rooms) if rooms else None,
-                privatized
-            )
-            print(f"Квартира добавлена! ID: {apartment_id}")
-            
-        elif choice == "7":
-            print_title("ОПЛАТА ПЛАТЕЖА")
-            
-            # Показываем неоплаченные платежи
-            self.db.connect()
-            cursor = self.db.conn.cursor()
-            cursor.execute("""
-            SELECT p.id, b.address, a.number, p.period, p.amount
-            FROM payments p
-            JOIN apartments a ON p.apartment_id = a.id
-            JOIN buildings b ON a.building_id = b.id
-            WHERE p.is_paid = 0
-            ORDER BY p.period
-            """)
-            
-            unpaid = cursor.fetchall()
-            if unpaid:
-                print("Неоплаченные платежи:")
-                for p in unpaid:
-                    print(f"{p['id']}. {p['address']}, кв. {p['number']} - {p['period']}: {p['amount']} руб.")
-                
-                payment_id = int(input("\nID платежа для оплаты: "))
-                db.mark_payment_as_paid(payment_id)
-                print("Платеж отмечен как оплаченный!")
-            else:
-                print("Неоплаченных платежей нет")
-                
-        elif choice == "8":
-            print_title("ПОДРОБНОСТИ ПО КВАРТИРЕ")
-            
-            # Показываем список квартир
-            self.db.connect()
-            cursor = self.db.conn.cursor()
-            cursor.execute("""
-            SELECT a.id, b.address, a.number
-            FROM apartments a
-            JOIN buildings b ON a.building_id = b.id
-            ORDER BY b.address, a.number
-            """)
-            
-            apartments = cursor.fetchall()
-            print("Список квартир:")
-            for a in apartments:
-                print(f"{a['id']}. {a['address']}, кв. {a['number']}")
-            
-            apartment_id = int(input("\nID квартиры: "))
-            details = reports.generate_apartment_details(apartment_id)
-            
-            print(f"\nАдрес: {details['Квартира']['Адрес']}")
-            print(f"Площадь: {details['Квартира']['Площадь']} м²")
-            print(f"Комнат: {details['Квартира']['Комнат']}")
-            print(f"Приватизирована: {details['Квартира']['Приватизирована']}")
-            
-            print("\nЖильцы:")
-            for resident in details['Жильцы']:
-                owner = " (владелец)" if resident['is_owner'] else ""
-                print(f"  - {resident['full_name']}{owner}")
-            
-            print("\nПоследние платежи:")
-            for payment in details['Платежи'][:5]:  # Показываем последние 5
-                status = "✓" if payment['is_paid'] else "✗"
-                print(f"  {status} {payment['period']}: {payment['amount']} руб.")
-            
-        elif choice == "0":
-            print("Выход из программы.")
-            db.close()
-            break
-            
-        else:
-            print("Неверный выбор. Попробуйте снова.")
-
-if __name__ == "__main__":
-    main()
+        # Текущие данные
+        self.current_table = None
+        self.current_data = []
+        self.current_filter = {}
+        
+        # Создание интерфейса
+        self.create_menu()
+        self.create_main_frame()
+        self.create_table_frame()
+        self.create_control_frame()
+        
+        # Загружаем список таблиц
+        self.load_table_list()
+    
+    def create_menu(self):
+        """Создание меню"""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Меню Файл
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Файл", menu=file_menu)
+        file_menu.add_command(label="Экспорт в CSV", command=self.export_to_csv)
+        file_menu.add_separator()
+        file_menu.add_command(label="Выход", command=self.root.quit)
+        
+        # Меню Отчеты
+        report_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Отчеты", menu=report_menu)
+        report_menu.add_command(label="Отчет по платежам", command=lambda: self.open_report_dialog("payments"))
+        report_menu.add_command(label="Отчет по задолженностям", command=lambda: self.open_report_dialog("debts"))
+        report_menu.add_command(label="Избирательные списки", command=lambda: self.open_report_dialog("electoral"))
+        
+        # Меню Помощь
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Помощь", menu=help_menu)
+        help_menu.add_command(label="О программе", command=self.show_about)
+    
+    def create_main_frame(self):
+        """Создание основной рамки"""
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Выбор таблицы
+        ttk.Label(main_frame, text="Таблица:").grid(row=0, column=0, padx=5, pady=5)
+        self.table_combo = ttk.Combobox(main_frame, state="readonly", width=20)
+        self.table_combo.grid(row=0, column=1, padx=5, pady=5)
+        self.table_combo.bind("<<ComboboxSelected>>", self.on_table_selected)
+        
+        # Кнопки управления таблицей
+        ttk.Button(main_frame, text="Обновить", command=self.refresh_table).grid(row=0, column=2, padx=5, pady=5)
+        ttk.Button(main_frame, text="Добавить запись", command=self.add_record).grid(row=0, column=3, padx=5, pady=5)
+        ttk.Button(main_frame, text="Удалить запись", command=self.delete_record).grid(row=0, column=4, padx=5, pady=5)
+        
+        # Поиск
+        ttk.Label(main_frame, text="Поиск:").grid(row=1, column=0, padx=5, pady=5)
+        self.search_field_combo = ttk.Combobox(main_frame, width=15)
+        self.search_field_combo.grid(row=1, column=1, padx=5, pady=5)
+        
+        self.search_entry = ttk.Entry(main_frame, width=20)
+        self.search_entry.grid(row=1, column=2, padx=5, pady=5)
+        self.search_entry.bind("<Return>", lambda e: self.search_records())
+        
+        ttk.Button(main_frame, text="Найти", command=self.search_records).grid(row=1, column=3, padx=5, pady=5)
+        ttk.Button(main_frame, text="Сброс", command=self.reset_search).grid(row=1, column=4, padx=5, pady=5)
+    
+    def create_table_frame(self):
+        """Создание рамки для таблицы"""
+        table_frame = ttk.Frame(self.root, padding="10")
+        table_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Дерево для отображения данных
+        self.tree = ttk.Treeview(table_frame, show="headings")
+        self.tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Полоса прокрутки
+        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Настройка растягивания
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(1, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+    
+    def create_control_frame(self):
+        """Создание рамки с элементами управления"""
+        control_frame = ttk.Frame(self.root, padding="10")
+        control_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        
+        # Фильтры
+        ttk.Label(control_frame, text="Фильтр по полю:").grid(row=0, column=0, padx=5, pady=5)
+        self.filter_field_combo = ttk.Combobox(control_frame, width=15)
+        self.filter_field_combo.grid(row=0, column=1, padx=5, pady=5)
+        
+        self.filter_value_entry = ttk.Entry(control_frame, width=20)
+        self.filter_value_entry.grid(row=0, column=2, padx=5, pady=5)
+        
+        ttk.Button(control_frame, text="Применить фильтр", command=self.apply_filter).grid(row=0, column=3, padx=5, pady=5)
+        ttk.Button(control_frame, text="Сбросить фильтры", command=self.clear_filters).grid(row=0, column=4, padx=5, pady=5)
+        
+        # Сортировка
+        ttk.Label(control_frame, text="Сортировка по:").grid(row=1, column=0, padx=5, pady=5)
+        self.sort_field_combo = ttk.Combobox(control_frame, width=15)
+        self.sort_field_combo.grid(row=1, column=1, padx=5, pady=5)
+        
+        self.sort_order_var = tk.BooleanVar(value=True)
+        ttk.Radiobutton(control_frame, text="По возрастанию", variable=self.sort_order_var, value=True).grid(row=1, column=2, padx=5, pady=5)
+        ttk.Radiobutton(control_frame, text="По
